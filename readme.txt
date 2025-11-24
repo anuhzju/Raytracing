@@ -1,27 +1,10 @@
+CSCI-420 Computer Graphics
 Assignment #3: Ray tracing
+Anna Zhu
 
-FULL NAME: !!!replaceme!!!
+This program implements a recursive ray tracer in C++. It renders a static scene (triangles, spheres, multiple point lights) using backwards ray tracing from a fixed camera at the origin. The final output can be displayed on screen or saved as a JPEG.
 
-
-MANDATORY FEATURES
-------------------
-
-<Under "Status" please indicate whether it has been implemented and is
-functioning correctly.  If not, please explain the current status.>
-
-Feature:                                 Status: finish? (yes/no)
--------------------------------------    -------------------------
-1) Ray tracing triangles                  !!!no, explain!!!
-
-2) Ray tracing sphere                     !!!no, explain!!!
-
-3) Triangle Phong Shading                 !!!no, explain!!!
-
-4) Sphere Phong Shading                   !!!no, explain!!!
-
-5) Shadows rays                           !!!no, explain!!!
-
-6) Still images                           !!!no, explain!!!
-   
-7) Extra Credit (up to 20 points)
-   !!! explain your extra credit here, if applicable !!!
+Additional Features:
+- Phong illumination model
+- Soft shadows (area light sampling)
+- Recursive reflections
