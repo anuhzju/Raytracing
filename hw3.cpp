@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h> // for rand
 #ifdef WIN32
   #define strcasecmp _stricmp
 #endif
@@ -35,6 +36,8 @@
 #define MAX_SPHERES 100
 #define MAX_LIGHTS 100
 #define MAX_DEPTH 3 // max bounces for reflections
+#define SHADOW_SAMPLES 8 // samples per light for soft shadows
+#define LIGHT_RADIUS 0.2 // area light radius
 
 char * filename = NULL;
 
@@ -179,6 +182,20 @@ struct HitInfo
     double ks[3];
     double shininess;
 };
+
+double rand01()
+{
+    return rand() / (double)RAND_MAX;
+}
+
+void sample(double radius, double offset[3])
+{
+    double r = radius * sqrt(rand01());       // sqrt for uniform area distribution
+    double theta = 2.0 * M_PI * rand01();
+    offset[0] = r * cos(theta);
+    offset[1] = r * sin(theta);
+    offset[2] = 0.0;
+}
 
 // sphere intersection
 bool intersect_sphere(const double rayOrigin[3], const double rayDir[3],
@@ -357,8 +374,8 @@ bool find_nearest_hit(const double rayOrigin[3], const double rayDir[3], HitInfo
     return hit.hit;
 }
 
-// shadow test
-bool is_in_shadow(const double point[3], const double normal[3], const Light& light)
+// lower level occlusion check for soft shadows
+bool occluded_to_point(const double point[3], const double normal[3], const double targetPos[3])
 {
     // offset slightly
     double origin[3];
@@ -366,20 +383,20 @@ bool is_in_shadow(const double point[3], const double normal[3], const Light& li
     vec_scale(normal, EPSILON * 10.0, offset);
     vec_add(point, offset, origin);
 
-    double toLight[3];
-    vec_sub(light.position, origin, toLight);
-    double distToLight = vec_length(toLight);
-    vec_normalize(toLight);
+    double dir[3];
+    vec_sub(targetPos, origin, dir);
+    double distToTarget = vec_length(dir);
+    vec_normalize(dir);
 
     // spheres
     for (int i = 0; i < num_spheres; ++i)
     {
         double t;
-        if (intersect_sphere(origin, toLight, spheres[i], t))
+        if (intersect_sphere(origin, dir, spheres[i], t))
         {
-            if (t > EPSILON && t < distToLight - EPSILON)
+            if (t > EPSILON && t < distToTarget - EPSILON)
             {
-                return true;  
+                return true;
             }
         }
     }
@@ -388,16 +405,44 @@ bool is_in_shadow(const double point[3], const double normal[3], const Light& li
     for (int i = 0; i < num_triangles; ++i)
     {
         double t, u, v;
-        if (intersect_triangle(origin, toLight, triangles[i], t, u, v))
+        if (intersect_triangle(origin, dir, triangles[i], t, u, v))
         {
-            if (t > EPSILON && t < distToLight - EPSILON)
+            if (t > EPSILON && t < distToTarget - EPSILON)
             {
-                return true; 
+                return true;
             }
         }
     }
 
-    return false; 
+    return false;
+}
+
+// shadow test
+bool is_in_shadow(const double point[3], const double normal[3], const Light& light)
+{
+    return occluded_to_point(point, normal, light.position);
+}
+
+// 1 = fully lit, 0 = fully in shadow
+double soft_shadow_visibility(const double point[3], const double normal[3], const Light& light)
+{
+    int visibleCount = 0;
+
+    for (int s = 0; s < SHADOW_SAMPLES; ++s)
+    {
+        double offset[3];
+        sample(LIGHT_RADIUS, offset);
+
+        double samplePos[3];
+        samplePos[0] = light.position[0] + offset[0];
+        samplePos[1] = light.position[1] + offset[1];
+        samplePos[2] = light.position[2] + offset[2]; 
+
+        if (!occluded_to_point(point, normal, samplePos))
+            visibleCount++;
+    }
+
+    return (double)visibleCount / (double)SHADOW_SAMPLES;
 }
 
 // local phong shading w/o reflection
@@ -412,8 +457,19 @@ void shade_local(const HitInfo& hit, const double viewDir[3], int depth, double 
     // add diffuse + specular (if not in shadow) for each light
     for (int i = 0; i < num_lights; ++i)
     {
-        if (depth == 0 && is_in_shadow(hit.point, hit.normal, lights[i]))
-            continue; 
+        double visibility = 1.0;
+
+        if (depth == 0)
+        {
+            visibility = soft_shadow_visibility(hit.point, hit.normal, lights[i]);
+            if (visibility <= 0.0)
+                continue; 
+        }
+
+        else
+        {
+            visibility = 1.0;
+        }
 
         // point to light
         double L[3];
@@ -444,7 +500,7 @@ void shade_local(const HitInfo& hit, const double viewDir[3], int depth, double 
         {
             double diffuse = hit.kd[c] * NdotL;
             double specular = hit.ks[c] * specTerm;
-            outColor[c] += lights[i].color[c] * (diffuse + specular);
+            outColor[c] += visibility * lights[i].color[c] * (diffuse + specular); // scale w visibility
         }
     }
 
@@ -781,6 +837,9 @@ int main(int argc, char ** argv)
   glutDisplayFunc(display);
   glutIdleFunc(idle);
   init();
+
+  srand((unsigned int)time(NULL));
+
   glutMainLoop();
 }
 
