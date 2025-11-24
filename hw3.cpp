@@ -1,4 +1,4 @@
-/* **************************
+﻿/* **************************
  * CSCI 420
  * Assignment 3 Raytracer
  * Name: Anna Zhu
@@ -34,6 +34,7 @@
 #define MAX_TRIANGLES 20000
 #define MAX_SPHERES 100
 #define MAX_LIGHTS 100
+#define MAX_DEPTH 3 // max bounces for reflections
 
 char * filename = NULL;
 
@@ -399,20 +400,19 @@ bool is_in_shadow(const double point[3], const double normal[3], const Light& li
     return false; 
 }
 
-// phong shading
-void shade(const HitInfo& hit, const double viewDir[3], unsigned char outColor[3])
+// local phong shading w/o reflection
+void shade_local(const HitInfo& hit, const double viewDir[3], int depth, double outColor[3])
 {
     // ambient
-    double color[3];
     for (int c = 0; c < 3; ++c)
     {
-        color[c] = ambient_light[c] * hit.kd[c];
+        outColor[c] = ambient_light[c] * hit.kd[c];
     }
 
     // add diffuse + specular (if not in shadow) for each light
     for (int i = 0; i < num_lights; ++i)
     {
-        if (is_in_shadow(hit.point, hit.normal, lights[i]))
+        if (depth == 0 && is_in_shadow(hit.point, hit.normal, lights[i]))
             continue; 
 
         // point to light
@@ -444,16 +444,94 @@ void shade(const HitInfo& hit, const double viewDir[3], unsigned char outColor[3
         {
             double diffuse = hit.kd[c] * NdotL;
             double specular = hit.ks[c] * specTerm;
-            color[c] += lights[i].color[c] * (diffuse + specular);
+            outColor[c] += lights[i].color[c] * (diffuse + specular);
         }
     }
 
     // clamp
     for (int c = 0; c < 3; ++c)
     {
-        if (color[c] < 0.0) color[c] = 0.0;
-        if (color[c] > 1.0) color[c] = 1.0;
-        outColor[c] = (unsigned char)(color[c] * 255.0 + 0.5);
+        if (outColor[c] < 0.0) outColor[c] = 0.0;
+        if (outColor[c] > 1.0) outColor[c] = 1.0;
+    }
+}
+
+// recursive raytracer
+void trace_ray(const double origin[3], const double dir[3], int depth, unsigned char outColor[3])
+{
+    // base case: too deep → no contribution
+    if (depth > MAX_DEPTH)
+    {
+        outColor[0] = outColor[1] = outColor[2] = 0;
+        return;
+    }
+
+    HitInfo hit;
+    if (!find_nearest_hit(origin, dir, hit))
+    {
+        // background color
+        double bg[3] = { 0.02, 0.02, 0.02 }; // tweak if you like
+        outColor[0] = (unsigned char)(bg[0] * 255.0);
+        outColor[1] = (unsigned char)(bg[1] * 255.0);
+        outColor[2] = (unsigned char)(bg[2] * 255.0);
+        return;
+    }
+
+    // local phong
+    double viewDir[3] = { -dir[0], -dir[1], -dir[2] }; 
+    double localColor[3];
+    shade_local(hit, viewDir, depth, localColor);
+
+    // ~ recursive reflection ~
+    double reflectivity = hit.ks[0];
+    if (hit.ks[1] > reflectivity) reflectivity = hit.ks[1];
+    if (hit.ks[2] > reflectivity) reflectivity = hit.ks[2];
+
+    // clamp reflectivity so it doesn't go crazy
+    if (reflectivity < 0.0) reflectivity = 0.0;
+    if (reflectivity > 1.0) reflectivity = 1.0;
+
+    double finalColor[3] = { localColor[0], localColor[1], localColor[2] };
+
+    if (reflectivity > 1e-3 && depth < MAX_DEPTH)
+    {
+        // R = D - 2(D·N)N
+        double NdotD = vec_dot(hit.normal, dir);
+        double reflectionDir[3];
+        double tmp[3];
+
+        vec_scale(hit.normal, 2.0 * NdotD, tmp);
+        vec_sub(dir, tmp, reflectionDir);
+        vec_normalize(reflectionDir);
+
+        // offset a bit
+        double newOrigin[3];
+        double offset[3];
+        vec_scale(hit.normal, EPSILON * 10.0, offset);
+        vec_add(hit.point, offset, newOrigin);
+
+        unsigned char reflU8[3];
+        trace_ray(newOrigin, reflectionDir, depth + 1, reflU8);
+
+        double reflColor[3] = {
+          reflU8[0] / 255.0,
+          reflU8[1] / 255.0,
+          reflU8[2] / 255.0
+        };
+
+        // mix local and reflection
+        for (int c = 0; c < 3; ++c)
+        {
+            finalColor[c] = (1.0 - reflectivity) * finalColor[c] + reflectivity * reflColor[c];
+        }
+    }
+
+    // clamp/convert
+    for (int c = 0; c < 3; ++c)
+    {
+        if (finalColor[c] < 0.0) finalColor[c] = 0.0;
+        if (finalColor[c] > 1.0) finalColor[c] = 1.0;
+        outColor[c] = (unsigned char)(finalColor[c] * 255.0 + 0.5);
     }
 }
 
@@ -484,27 +562,10 @@ void draw_scene()
         double rayDir[3] = { px, py, pz };
         vec_normalize(rayDir);
 
-        HitInfo hit;
-        unsigned char r, g, b;
+        unsigned char rgb[3];
+        trace_ray(camOrigin, rayDir, 0, rgb);
 
-        if (find_nearest_hit(camOrigin, rayDir, hit))
-        {
-            double viewDir[3];
-            vec_scale(hit.point, -1.0, viewDir);
-
-            unsigned char rgb[3];
-            shade(hit, viewDir, rgb);
-            r = rgb[0];
-            g = rgb[1];
-            b = rgb[2];
-        }
-        else
-        {
-            // background color
-            r = g = b = 0;
-        }
-
-        plot_pixel(x, y, r, g, b);
+        plot_pixel(x, y, rgb[0], rgb[1], rgb[2]);
     }
     glEnd();
     glFlush();
