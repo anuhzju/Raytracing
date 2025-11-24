@@ -1,7 +1,7 @@
 /* **************************
  * CSCI 420
  * Assignment 3 Raytracer
- * Name: <Your name here>
+ * Name: Anna Zhu
  * *************************
 */
 
@@ -20,11 +20,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #ifdef WIN32
   #define strcasecmp _stricmp
 #endif
 
 #include <imageIO.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #define MAX_TRIANGLES 20000
 #define MAX_SPHERES 100
@@ -92,8 +97,375 @@ void plot_pixel_display(int x,int y,unsigned char r,unsigned char g,unsigned cha
 void plot_pixel_jpeg(int x,int y,unsigned char r,unsigned char g,unsigned char b);
 void plot_pixel(int x,int y,unsigned char r,unsigned char g,unsigned char b);
 
+//vec helpers
+void vec_add(const double a[3], const double b[3], double r[3])
+{
+    r[0] = a[0] + b[0];
+    r[1] = a[1] + b[1];
+    r[2] = a[2] + b[2];
+}
+
+void vec_sub(const double a[3], const double b[3], double r[3])
+{
+    r[0] = a[0] - b[0];
+    r[1] = a[1] - b[1];
+    r[2] = a[2] - b[2];
+}
+
+void vec_scale(const double a[3], double s, double r[3])
+{
+    r[0] = a[0] * s;
+    r[1] = a[1] * s;
+    r[2] = a[2] * s;
+}
+
+void vec_copy(const double a[3], double r[3])
+{
+    r[0] = a[0]; r[1] = a[1]; r[2] = a[2];
+}
+
+void vec_set(double v[3], double x, double y, double z)
+{
+    v[0] = x; v[1] = y; v[2] = z;
+}
+
+double vec_dot(const double a[3], const double b[3])
+{
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+void vec_cross(const double a[3], const double b[3], double r[3])
+{
+    r[0] = a[1] * b[2] - a[2] * b[1];
+    r[1] = a[2] * b[0] - a[0] * b[2];
+    r[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+double vec_length(const double a[3])
+{
+    return sqrt(vec_dot(a, a));
+}
+
+static const double EPSILON = 1e-6;
+
+void vec_normalize(double a[3])
+{
+    double len = vec_length(a);
+    if (len > EPSILON)
+    {
+        a[0] /= len;
+        a[1] /= len;
+        a[2] /= len;
+    }
+}
+
+void vec_reflect(const double L[3], const double N[3], double R[3])
+{
+    double ndotl = vec_dot(N, L);
+    double tmp[3];
+    vec_scale(N, 2.0 * ndotl, tmp);
+    vec_sub(tmp, L, R);
+}
+
+struct HitInfo
+{
+    bool hit;
+    double t;
+    double point[3];
+    double normal[3];
+
+    double kd[3];
+    double ks[3];
+    double shininess;
+};
+
+// sphere intersection
+bool intersect_sphere(const double rayOrigin[3], const double rayDir[3],
+    const Sphere& s, double& tHit)
+{
+    double oc[3];
+    vec_sub(rayOrigin, s.position, oc);
+
+    double a = vec_dot(rayDir, rayDir);
+    double b = 2.0 * vec_dot(rayDir, oc);
+    double c = vec_dot(oc, oc) - s.radius * s.radius;
+
+    double disc = b * b - 4.0 * a * c;
+    if (disc < 0.0) return false;
+
+    double sqrtDisc = sqrt(disc);
+    double t0 = (-b - sqrtDisc) / (2.0 * a);
+    double t1 = (-b + sqrtDisc) / (2.0 * a);
+
+    double t = t0;
+    if (t < EPSILON) t = t1;
+    if (t < EPSILON) return false;
+
+    tHit = t;
+    return true;
+}
+
+// triangle intersection
+bool intersect_triangle(const double rayOrigin[3], const double rayDir[3],
+    const Triangle& tri, double& tHit, double& u, double& v)
+{
+    const double* p0 = tri.v[0].position;
+    const double* p1 = tri.v[1].position;
+    const double* p2 = tri.v[2].position;
+
+    double edge1[3], edge2[3];
+    vec_sub(p1, p0, edge1);
+    vec_sub(p2, p0, edge2);
+
+    double pvec[3];
+    vec_cross(rayDir, edge2, pvec);
+
+    double det = vec_dot(edge1, pvec);
+    if (fabs(det) < EPSILON) return false;
+
+    double invDet = 1.0 / det;
+
+    double tvec[3];
+    vec_sub(rayOrigin, p0, tvec);
+
+    u = vec_dot(tvec, pvec) * invDet;
+    if (u < 0.0 || u > 1.0) return false;
+
+    double qvec[3];
+    vec_cross(tvec, edge1, qvec);
+
+    v = vec_dot(rayDir, qvec) * invDet;
+    if (v < 0.0 || u + v > 1.0) return false;
+
+    double t = vec_dot(edge2, qvec) * invDet;
+    if (t < EPSILON) return false;
+
+    tHit = t;
+    return true;
+}
+
+// find closest intersection
+bool find_nearest_hit(const double rayOrigin[3], const double rayDir[3], HitInfo& hit)
+{
+    hit.hit = false;
+    hit.t = 1e30;
+
+    // sphere
+    for (int i = 0; i < num_spheres; ++i)
+    {
+        double tSphere;
+        if (intersect_sphere(rayOrigin, rayDir, spheres[i], tSphere))
+        {
+            if (tSphere < hit.t)
+            {
+                hit.hit = true;
+                hit.t = tSphere;
+
+                // point
+                double scaledDir[3];
+                vec_scale(rayDir, tSphere, scaledDir);
+                vec_add(rayOrigin, scaledDir, hit.point);
+
+                // normal
+                vec_sub(hit.point, spheres[i].position, hit.normal);
+                vec_normalize(hit.normal);
+
+                // phong
+                for (int c = 0; c < 3; ++c)
+                {
+                    hit.kd[c] = spheres[i].color_diffuse[c];
+                    hit.ks[c] = spheres[i].color_specular[c];
+                }
+                hit.shininess = spheres[i].shininess;
+            }
+        }
+    }
+
+    // triangles
+    for (int i = 0; i < num_triangles; ++i)
+    {
+        double tTri, u, v;
+        if (intersect_triangle(rayOrigin, rayDir, triangles[i], tTri, u, v))
+        {
+            if (tTri < hit.t)
+            {
+                hit.hit = true;
+                hit.t = tTri;
+
+                double w = 1.0 - u - v;
+
+                // positions
+                double p0[3], p1[3], p2[3];
+                vec_copy(triangles[i].v[0].position, p0);
+                vec_copy(triangles[i].v[1].position, p1);
+                vec_copy(triangles[i].v[2].position, p2);
+
+                for (int c = 0; c < 3; ++c)
+                {
+                    hit.point[c] = w * p0[c] + u * p1[c] + v * p2[c];
+                }
+
+                // normals
+                double n0[3], n1[3], n2[3];
+                vec_copy(triangles[i].v[0].normal, n0);
+                vec_copy(triangles[i].v[1].normal, n1);
+                vec_copy(triangles[i].v[2].normal, n2);
+                for (int c = 0; c < 3; ++c)
+                {
+                    hit.normal[c] = w * n0[c] + u * n1[c] + v * n2[c];
+                }
+                vec_normalize(hit.normal);
+
+                // phong
+                for (int c = 0; c < 3; ++c)
+                {
+                    hit.kd[c] =
+                        w * triangles[i].v[0].color_diffuse[c] +
+                        u * triangles[i].v[1].color_diffuse[c] +
+                        v * triangles[i].v[2].color_diffuse[c];
+
+                    hit.ks[c] =
+                        w * triangles[i].v[0].color_specular[c] +
+                        u * triangles[i].v[1].color_specular[c] +
+                        v * triangles[i].v[2].color_specular[c];
+                }
+
+                hit.shininess =
+                    w * triangles[i].v[0].shininess +
+                    u * triangles[i].v[1].shininess +
+                    v * triangles[i].v[2].shininess;
+            }
+        }
+    }
+
+    /*
+    if (hit.hit)
+    {
+        double viewDir[3];
+        // camera at origin, so viewDir = -point
+        vec_scale(hit.point, -1.0, viewDir);
+        if (vec_dot(hit.normal, viewDir) < 0.0)
+        {
+            hit.normal[0] = -hit.normal[0];
+            hit.normal[1] = -hit.normal[1];
+            hit.normal[2] = -hit.normal[2];
+        }
+    }
+    */
+
+    return hit.hit;
+}
+
+// shadow test
+bool is_in_shadow(const double point[3], const double normal[3], const Light& light)
+{
+    // offset slightly
+    double origin[3];
+    double offset[3];
+    vec_scale(normal, EPSILON * 10.0, offset);
+    vec_add(point, offset, origin);
+
+    double toLight[3];
+    vec_sub(light.position, origin, toLight);
+    double distToLight = vec_length(toLight);
+    vec_normalize(toLight);
+
+    // spheres
+    for (int i = 0; i < num_spheres; ++i)
+    {
+        double t;
+        if (intersect_sphere(origin, toLight, spheres[i], t))
+        {
+            if (t > EPSILON && t < distToLight - EPSILON)
+            {
+                return true;  
+            }
+        }
+    }
+
+    // triangles
+    for (int i = 0; i < num_triangles; ++i)
+    {
+        double t, u, v;
+        if (intersect_triangle(origin, toLight, triangles[i], t, u, v))
+        {
+            if (t > EPSILON && t < distToLight - EPSILON)
+            {
+                return true; 
+            }
+        }
+    }
+
+    return false; 
+}
+
+// phong shading
+void shade(const HitInfo& hit, const double viewDir[3], unsigned char outColor[3])
+{
+    // ambient
+    double color[3];
+    for (int c = 0; c < 3; ++c)
+    {
+        color[c] = ambient_light[c] * hit.kd[c];
+    }
+
+    // add diffuse + specular (if not in shadow) for each light
+    for (int i = 0; i < num_lights; ++i)
+    {
+        if (is_in_shadow(hit.point, hit.normal, lights[i]))
+            continue; 
+
+        // point to light
+        double L[3];
+        vec_sub(lights[i].position, hit.point, L);
+        vec_normalize(L);
+
+        double NdotL = vec_dot(hit.normal, L);
+        if (NdotL < 0.0) NdotL = 0.0;
+
+        // reflection of -L around N  
+        double Lneg[3] = { -L[0], -L[1], -L[2] };
+        double R[3];
+        vec_reflect(Lneg, hit.normal, R);
+        vec_normalize(R);
+
+        double V[3];
+        vec_copy(viewDir, V);
+        vec_normalize(V);
+
+        double RdotV = vec_dot(R, V);
+        if (RdotV < 0.0) RdotV = 0.0;
+
+        double specTerm = 0.0;
+        if (RdotV > 0.0 && hit.shininess > 0.0)
+            specTerm = pow(RdotV, hit.shininess);
+
+        for (int c = 0; c < 3; ++c)
+        {
+            double diffuse = hit.kd[c] * NdotL;
+            double specular = hit.ks[c] * specTerm;
+            color[c] += lights[i].color[c] * (diffuse + specular);
+        }
+    }
+
+    // clamp
+    for (int c = 0; c < 3; ++c)
+    {
+        if (color[c] < 0.0) color[c] = 0.0;
+        if (color[c] > 1.0) color[c] = 1.0;
+        outColor[c] = (unsigned char)(color[c] * 255.0 + 0.5);
+    }
+}
+
 void draw_scene()
 {
+    double aspect = (double)WIDTH / (double)HEIGHT;
+    double fovRad = fov * M_PI / 180.0;
+    double halfHeight = tan(fovRad * 0.5);
+    double halfWidth = aspect * halfHeight;
+
+    double camOrigin[3] = { 0.0, 0.0, 0.0 };
+
   for(unsigned int x=0; x<WIDTH; x++)
   {
     glPointSize(2.0);  
@@ -102,12 +474,37 @@ void draw_scene()
     glBegin(GL_POINTS);
     for(unsigned int y=0; y<HEIGHT; y++)
     {
-      // A simple R,G,B output for testing purposes.
-      // Modify these R,G,B colors to the values computed by your ray tracer.
-      unsigned char r = x % 256; // modify
-      unsigned char g = y % 256; // modify
-      unsigned char b = (x+y) % 256; // modify
-      plot_pixel(x, y, r, g, b);
+        double u = ((double)x + 0.5) / (double)WIDTH;
+        double v = ((double)y + 0.5) / (double)HEIGHT;
+
+        double px = (2.0 * u - 1.0) * halfWidth;
+        double py = (2.0 * v - 1.0) * halfHeight;
+        double pz = -1.0; 
+
+        double rayDir[3] = { px, py, pz };
+        vec_normalize(rayDir);
+
+        HitInfo hit;
+        unsigned char r, g, b;
+
+        if (find_nearest_hit(camOrigin, rayDir, hit))
+        {
+            double viewDir[3];
+            vec_scale(hit.point, -1.0, viewDir);
+
+            unsigned char rgb[3];
+            shade(hit, viewDir, rgb);
+            r = rgb[0];
+            g = rgb[1];
+            b = rgb[2];
+        }
+        else
+        {
+            // background color
+            r = g = b = 0;
+        }
+
+        plot_pixel(x, y, r, g, b);
     }
     glEnd();
     glFlush();
